@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ConstrAI Agent Safety Benchmark Suite"""
+"""ConstrAI Agent Safety EvaluationSuite"""
 
 import time, json, os, sys, statistics, uuid
 from dataclasses import dataclass, field
@@ -312,7 +312,7 @@ def bench_throughput():
 def main():
     W=72
     print("="*W)
-    print("  ConstrAI Agent Safety Benchmark Suite")
+    print("  ConstrAI Agent Safety EvaluationSuite")
     print("  Math-based safety constraints vs. real AI agent attack patterns")
     print("="*W)
     print()

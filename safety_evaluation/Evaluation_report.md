@@ -1,4 +1,4 @@
-# ConstrAI Agent Safety Benchmark Report
+# ConstrAI Agent Safety EvaluationReport
 
 **Framework:** ConstrAI v1.0 — Mathematical Safety Constraints for AI Agents  
 **Date:** February 8, 2026  
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-ConstrAI was benchmarked against realistic AI agent behaviors spanning file system access, web requests, code execution, database queries, multi-step attack chains, and adversarial evasion attacks. The framework uses mathematical invariant checking rather than prompt-based safety, enforcing formal constraints through a SafetyKernel that simulates action effects before allowing execution.
+ConstrAI was evaluated against synthetic agent modeling realistic LLM decision behavior spanning file system access, web requests, code execution, database queries, multi-step attack chains, and adversarial evasion attacks. The framework uses mathematical invariant checking rather than prompt-based safety, enforcing formal constraints through a SafetyKernel that simulates action effects before allowing execution.
 
 | Metric | Unconstrained | ConstrAI |
 |--------|:---:|:---:|
