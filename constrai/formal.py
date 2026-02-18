@@ -1,27 +1,25 @@
 """
-ConstrAI — Autonomous Engine for Guaranteed Intelligent Safety
-============================================================
-Module: constrai.formal — Layer 0: Mathematically Proven Guarantees
+ConstrAI — Layer 0: Mathematically Proven Safety Kernel
+========================================================
 
-This module contains ONLY things we can PROVE. No heuristics, no ML, no LLM.
-Pure deterministic state machines with verified safety properties.
+This module contains only provably-correct components. No heuristics, no ML,
+no LLM. Pure deterministic state machines with verified safety properties.
 
-THEOREMS (proven by construction + induction):
+Theorems proven by construction + induction:
   T1  Budget Safety:       spent_net(t) ≤ B₀  ∀t
-  T2  Termination:         halts in ≤ ⌊B₀/ε⌋ steps where ε = min_cost
-  T3  Invariant Safety:    For blocking-mode invariants: I(s₀)=True ⟹ I(sₜ)=True ∀t
-       (Monitoring-mode invariants are logged but not safety-critical)
+  T2  Termination:         halts in ≤ ⌊B₀/ε⌋ steps (requires ε = min_cost > 0)
+  T3  Invariant Safety:    I(s₀)=True ⟹ I(sₜ)=True ∀t  [blocking-mode only]
   T4  Monotone Spend:      spent_gross(t) ≤ spent_gross(t+1)  ∀t
   T5  Atomicity:           transitions are all-or-nothing
-  T6  Trace Integrity:     execution log is append-only, hash-chained
-  T7  Rollback Exactness:  undo(execute(s,a)) == s (via separate spend tracking)
-  T8  Emergency Escape:    SAFE_HOVER action always executable, cost-free, effect-free
+  T6  Trace Integrity:     execution log is append-only, SHA-256 hash-chained
+  T7  Rollback Exactness:  undo(execute(s,a)) == s  (via algebraic inverse effects)
+  T8  Emergency Escape:    SAFE_HOVER is always executable, cost-free, effect-free
 
-DESIGN PRINCIPLES:
-  - State is immutable (new states are created, never mutated)
-  - Actions are DATA (declarative effects), not CODE
-  - Every check happens BEFORE execution, never after
-  - The formal layer has ZERO knowledge of LLMs — it constrains any agent
+Design principles:
+  - State is immutable: new states are created on every transition, never mutated
+  - Actions are DATA (declarative effects), not CODE (function pointers)
+  - Every check happens BEFORE commitment, never after
+  - This layer has zero knowledge of LLMs; it constrains any decision-making agent
 """
 from __future__ import annotations
 
@@ -42,16 +40,16 @@ from typing import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 class GuaranteeLevel(Enum):
-    """Every claim in ConstrAI is tagged with its proof status."""
+    """Epistemic status of every claim in ConstrAI."""
     PROVEN      = "proven"       # Holds unconditionally by construction
-    CONDITIONAL = "conditional"  # Proven given stated assumptions
-    EMPIRICAL   = "empirical"    # Measured with confidence intervals
-    HEURISTIC   = "heuristic"    # Best-effort, no formal guarantee
+    CONDITIONAL = "conditional"  # Proven under stated assumptions
+    EMPIRICAL   = "empirical"    # Measured with statistical confidence
+    HEURISTIC   = "heuristic"    # Best-effort; no formal guarantee
 
 
 @dataclass(frozen=True)
 class Claim:
-    """An auditable claim about a system property."""
+    """An auditable, tagged claim about a system property."""
     name: str
     statement: str
     level: GuaranteeLevel
@@ -72,30 +70,33 @@ class State:
     Immutable, hashable, JSON-deterministic world state.
 
     Proven properties:
-      P1  Immutability:   no method mutates self after __init__
-      P2  Det. equality:  s1 == s2  ⟺  identical canonical JSON
-      P3  O(1) hash:      cached at construction time
-      P4  Isolation:      deep-copy on in, deep-copy on out
+      P1  Immutability:    no method mutates self after __init__
+      P2  Det. equality:   s1 == s2  ⟺  identical canonical JSON
+      P3  O(1) hash:       cached at construction time
+      P4  Isolation:       deep-copy on input, deep-copy on output
+
+    Why immutability matters: State objects can be stored cheaply as rollback
+    snapshots. If you never mutate, you can always go back to any prior state.
     """
     __slots__ = ('_vars', '_json', '_hash')
 
     def __init__(self, variables: Dict[str, Any]):
-        # Sort keys for canonical JSON + deep copy for isolation (P4)
-        # Use MappingProxyType to prevent direct dict mutation
         import types
+        # Sort keys for canonical JSON; deep-copy for isolation (P4).
+        # MappingProxyType makes the underlying dict read-only at the C level.
         v = {k: copy.deepcopy(variables[k]) for k in sorted(variables)}
         object.__setattr__(self, '_vars', types.MappingProxyType(v))
         object.__setattr__(self, '_json',
                            json.dumps(dict(v), sort_keys=True, default=str))
         object.__setattr__(self, '_hash', hash(self._json))
 
-    # ── Immutability enforcement (P1) ──
+    # Enforce P1: reject any attempt to mutate the object.
     def __setattr__(self, *_):
         raise AttributeError("State is immutable")
     def __delattr__(self, *_):
         raise AttributeError("State is immutable")
 
-    # ── Accessors (always return copies — P4) ──
+    # Accessors always return copies so callers cannot mutate internal data (P4).
     def get(self, key: str, default: Any = None) -> Any:
         v = self._vars.get(key, default)
         return copy.deepcopy(v)
@@ -109,7 +110,7 @@ class State:
     def has(self, key: str) -> bool:
         return key in self._vars
 
-    # ── Derived states (create new, never mutate — P1) ──
+    # Derived-state helpers create new State objects (P1 preserved).
     def with_updates(self, updates: Dict[str, Any]) -> 'State':
         d = self.to_dict()
         d.update(updates)
@@ -121,7 +122,7 @@ class State:
             d.pop(k, None)
         return State(d)
 
-    # ── Equality and hashing (P2, P3) ──
+    # Equality and hashing rely on canonical JSON (P2, P3).
     def __hash__(self) -> int:
         return self._hash
     def __eq__(self, other: object) -> bool:
@@ -135,16 +136,17 @@ class State:
 
     @property
     def fingerprint(self) -> str:
+        """16-hex-char SHA-256 prefix for trace entries and logging."""
         return hashlib.sha256(self._json.encode()).hexdigest()[:16]
 
     def diff(self, other: 'State') -> Dict[str, Tuple[Any, Any]]:
-        """Return {key: (old_val, new_val)} for all differences."""
+        """Return {key: (old_val, new_val)} for all differing keys."""
         all_keys = set(self._vars) | set(other._vars)
         return {k: (self._vars.get(k), other._vars.get(k))
                 for k in all_keys if self._vars.get(k) != other._vars.get(k)}
 
     def describe(self, max_keys: int = 20) -> str:
-        """Human/LLM-readable summary of state."""
+        """Human/LLM-readable summary (truncated for long values)."""
         items = list(self._vars.items())[:max_keys]
         lines = [f"  {k} = {_truncate(repr(v), 80)}" for k, v in items]
         if len(self._vars) > max_keys:
@@ -160,13 +162,13 @@ def _truncate(s: str, n: int) -> str:
 # §2  ACTIONS — Declarative Effects (Data, Not Code)
 # ═══════════════════════════════════════════════════════════════════════════
 
-_SENTINEL_DELETE = object()
+_SENTINEL_DELETE = object()  # Marks a key for deletion after apply()
 
 
 @dataclass(frozen=True)
 class Effect:
     """
-    Atomic effect on one state variable. This is DATA, not a function pointer.
+    Atomic, declarative state mutation on a single variable.
 
     Modes:
       set        — variable := value
@@ -174,18 +176,20 @@ class Effect:
       decrement  — variable -= value
       multiply   — variable *= value
       append     — variable.append(value)
-      remove     — variable.remove(value)
+      remove     — variable.remove(value)  (no-op if absent)
       delete     — del variable
 
-    Determinism proof: apply() uses only arithmetic and list ops on its
-    inputs. No randomness, no I/O, no mutable external state.
-    Therefore: same (current, effect) → same result.  ∎
+    Determinism proof:
+      apply() uses only arithmetic and list operations on its arguments.
+      No randomness, no I/O, no mutable external state.
+      Therefore: same (current_value, effect) → same result.  ∎
     """
     variable: str
-    mode: str       # "set" | "increment" | "decrement" | "multiply" | "append" | "remove" | "delete"
+    mode: str
     value: Any = None
 
     def apply(self, current: Any) -> Any:
+        """Apply effect to current value, returning new value."""
         m = self.mode
         if m == "set":       return self.value
         if m == "increment": return (current or 0) + self.value
@@ -211,15 +215,14 @@ class Effect:
 
     def inverse(self) -> "Effect":
         """
-        Compute the inverse Effect that reverts this effect's operation.
+        Return the algebraic inverse of this effect.
 
-        For increment/decrement/multiply/append/remove modes, returns the
-        algebraic inverse. For set/delete, raises ValueError (requires prior state).
+        Works for increment/decrement/multiply/append/remove.
+        Raises ValueError for set/delete (requires prior state; use
+        ActionSpec.compute_inverse_effects() instead).
         """
         m = self.mode
         if m == "set":
-            # set cannot be inverted without prior value
-            # Return placeholder; ActionSpec.compute_inverse_effects() handles this
             raise ValueError("Cannot invert 'set' mode without prior state value")
         elif m == "increment":
             return Effect(self.variable, "decrement", self.value)
@@ -227,7 +230,7 @@ class Effect:
             return Effect(self.variable, "increment", self.value)
         elif m == "multiply":
             if self.value == 0:
-                raise ValueError("Cannot invert multiply by 0 without prior state")
+                raise ValueError("Cannot invert multiply by 0 — prior state required")
             return Effect(self.variable, "multiply", 1.0 / self.value)
         elif m == "append":
             return Effect(self.variable, "remove", self.value)
@@ -242,21 +245,21 @@ class Effect:
 @dataclass(frozen=True)
 class ActionSpec:
     """
-    Fully declarative action specification.
+    Fully declarative action specification. Data, not code.
 
-    WHY data-not-code?
-      1. Deterministic replay:  same spec → same transition
-      2. Pre-execution sim:     no side effects during planning
-      3. Formal verification:   effects are inspectable data
-      4. LLM readability:       semantic metadata for reasoning
-      5. Invertibility:         compute rollback from spec + prior state
+    Why data-not-code?
+      1. Deterministic replay:  same spec → same transition, always
+      2. Pre-execution sim:     no side effects during safety checking
+      3. Formal verification:   effects are inspectable, diffable data
+      4. LLM readability:       semantic metadata aids structured reasoning
+      5. Invertibility:         rollback computable from spec + prior state
 
     Theorem (Determinism of simulate):
       ∀ state s, action a: a.simulate(s) returns a unique state s'.
     Proof:
-      State.to_dict() deep-copies (P4).
+      State.to_dict() deep-copies (P4 isolation).
       Effect.apply() is pure (proven above).
-      State() constructor is deterministic (P2).
+      State() constructor is deterministic (P2 canonical JSON).
       ⟹ same (s, a) → same s'.  ∎
     """
     id: str
@@ -265,12 +268,12 @@ class ActionSpec:
     effects: Tuple[Effect, ...]
     cost: float
 
-    # ── Semantic metadata (for LLM reasoning layer) ──
+    # Semantic metadata used by the reasoning layer (not by the kernel).
     category: str = "general"
     risk_level: str = "low"          # low | medium | high | critical
     reversible: bool = True
-    preconditions_text: str = ""     # Natural language: what must be true
-    postconditions_text: str = ""    # Natural language: what will be true
+    preconditions_text: str = ""     # Natural language: what must be true before
+    postconditions_text: str = ""    # Natural language: what will be true after
     estimated_duration_s: float = 0.0
     tags: Tuple[str, ...] = ()
 
@@ -281,7 +284,7 @@ class ActionSpec:
             raise ValueError("Action must have a non-empty ID")
 
     def simulate(self, state: State) -> State:
-        """Apply effects to state, returning new state. Original unchanged."""
+        """Apply effects to state, returning a new state. Original is unchanged."""
         updates = {}
         deletions: Set[str] = set()
         for eff in self.effects:
@@ -294,16 +297,17 @@ class ActionSpec:
 
     def compute_inverse_effects(self, state_before: State) -> Tuple[Effect, ...]:
         """
-        Compute effects that undo this action from state_before.
+        Compute effects that exactly undo this action from state_before.
 
         Theorem T7 (Rollback Exactness):
           Let s' = a.simulate(s).
           Let inv = a.compute_inverse_effects(s).
           Let a_inv = ActionSpec(effects=inv, ...).
           Then a_inv.simulate(s') == s.
-        Proof: Each inverse effect restores the original value of its
-          variable from state_before. Since state_before is immutable,
-          the restored values are exact.  ∎
+        Proof:
+          Each inverse effect restores the variable's original value from
+          state_before. Since state_before is immutable (P1), the restored
+          values are exact copies of what existed before the action.  ∎
         """
         inverse = []
         for eff in self.effects:
@@ -318,10 +322,11 @@ class ActionSpec:
         return tuple(inverse)
 
     def affected_variables(self) -> Set[str]:
+        """Return the set of state variable names this action touches."""
         return {e.variable for e in self.effects}
 
-    # ── LLM-readable representation ──
     def to_llm_text(self) -> str:
+        """Full action description for LLM decision prompts."""
         parts = [
             f"[{self.id}] {self.name}",
             f"  {self.description}",
@@ -336,6 +341,7 @@ class ActionSpec:
         return "\n".join(parts)
 
     def to_compact_text(self) -> str:
+        """Single-line summary for constrained-space prompts."""
         return f"[{self.id}] {self.name} (${self.cost:.2f}, {self.risk_level})"
 
 
@@ -347,16 +353,28 @@ class Invariant:
     """
     Safety predicate that must hold on every reachable state.
 
-    Theorem T3 (Invariant Preservation):
-      Given I(s₀) = True, and system uses check-before-commit:
+    Enforcement modes:
+      "blocking"   — T3 applies: a violated invariant blocks the action.
+                     This is the safety-critical mode.
+      "monitoring" — Violation is logged but does not block the action.
+                     Useful for soft warnings and diagnostics.
+
+    Theorem T3 (Invariant Preservation) — blocking-mode only:
+      Given I(s₀) = True and check-before-commit discipline:
         ∀t: I(sₜ) = True.
     Proof by induction on t:
       Base: I(s₀) = True (precondition of system construction).
       Step: Assume I(sₜ) = True.
         Let s' = a.simulate(sₜ).
-        If I(s') = False → action rejected, sₜ₊₁ := sₜ. I holds.
-        If I(s') = True  → action committed, sₜ₊₁ := s'. I holds.
+        If I(s') = False and enforcement="blocking" → action rejected, sₜ₊₁ := sₜ.
+          I(sₜ₊₁) = I(sₜ) = True. ✓
+        If I(s') = True → action committed, sₜ₊₁ := s'.
+          I(sₜ₊₁) = True. ✓
       ∎
+
+    Note: If the predicate raises an exception during check(), the kernel
+    treats it as a violation (fail-safe default). Exception-raising predicates
+    do NOT allow unsafe states through.
     """
     def __init__(self, name: str, predicate: Callable[[State], bool],
                  description: str = "", severity: str = "critical",
@@ -364,21 +382,21 @@ class Invariant:
         self.name = name
         self.predicate = predicate
         self.description = description or name
-        # Back-compat: severity historically implied enforcement.
-        # New explicit field names the behavior: "blocking" or "monitoring".
-        # - "critical" => blocking
-        # - "warning"  => monitoring
-        self.severity = severity  # "warning" or "critical" (legacy label)
+        # Legacy 'severity' field maps to enforcement mode.
+        # Prefer 'enforcement' for new code.
+        self.severity = severity
         if enforcement is None:
             self.enforcement = "blocking" if severity == "critical" else "monitoring"
         else:
             if enforcement not in ("blocking", "monitoring"):
                 raise ValueError(
-                    f"Invariant enforcement must be 'blocking' or 'monitoring', got {enforcement!r}")
+                    f"Invariant enforcement must be 'blocking' or 'monitoring', "
+                    f"got {enforcement!r}")
             self.enforcement = enforcement
         self._violations = 0
 
     def check(self, state: State) -> Tuple[bool, str]:
+        """Evaluate predicate. Returns (holds, reason). Exceptions count as violations."""
         try:
             holds = self.predicate(state)
             if not holds:
@@ -406,71 +424,72 @@ class Invariant:
 
 class BudgetController:
     """
+    Integer-arithmetic budget ledger. Proven resource safety.
+
     Theorem T1 (Budget Safety):  spent_net(t) ≤ B₀  ∀t.
     Proof:
       Base: spent_net(0) = 0 ≤ B₀. ✓
       Step: Before charging c at time t:
-        Guard: c ≤ B₀ - spent_net(t). If False → reject.
+        Guard: c ≤ B₀ - spent_net(t). If False → reject, spent unchanged. ✓
         If True: spent_net(t+1) = spent_net(t) + c ≤ B₀. ✓
       By induction. ∎
 
     Theorem T4 (Monotone Gross Spend):  spent_gross(t) ≤ spent_gross(t+1).
-    Proof: Only charge() increments gross_spent (c ≥ 0). Refund is separate. ∎
+    Proof: charge() asserts c ≥ 0 and increments gross by c. ∎
 
     Theorem T7 (Rollback with Separate Accounting):
-      Refund operations decrease net spend without violating T4 (which tracks gross).
+      refund() decrements net spend without violating T4 (which tracks gross).
+      This is why gross and refunded are tracked separately.
 
     Implementation notes:
-      - spent_gross: Cumulative charges (never decreases) — proves T4
-      - spent_refunded: Cumulative refunds (never decreases) — separate accounting
-      - spent_net: spent_gross - spent_refunded — used for budget checks (T1)
-      - All arithmetic uses integer MILLICENTS (cost * 100_000) internally
-        to eliminate floating-point drift. External API is still float.
-      - threading.Lock protects all mutations for concurrency safety.
+      - All arithmetic is in integer MILLICENTS (cost × 100_000) to eliminate
+        floating-point accumulation over many steps. Exact for ≤ 5 decimal places.
+      - threading.Lock guards all mutations for concurrent-safe operation.
+      - The ledger is append-only for auditability.
     """
-    _SCALE = 100_000  # Millicents: 1.0 = 100_000 units. Exact for ≤5 decimal places.
+    _SCALE = 100_000  # 1.0 dollar = 100_000 millicents. Exact at 5 decimal places.
 
     def __init__(self, budget: float):
         if budget < 0:
             raise ValueError(f"Budget must be ≥ 0, got {budget}")
         self._budget_i = round(budget * self._SCALE)
-        self._spent_gross_i = 0  # Total charged
-        self._refunded_i = 0     # Total refunded
+        self._spent_gross_i = 0  # Cumulative charges; never decreases (T4).
+        self._refunded_i = 0     # Cumulative refunds; never decreases.
         self._ledger: List[Tuple[str, float, float]] = []
         self._lock = _threading.Lock()
 
     @property
     def budget(self) -> float:
-        """Total budget."""
+        """Total allocated budget."""
         return self._budget_i / self._SCALE
 
     @property
     def spent_gross(self) -> float:
-        """Cumulative charges (never decreases — proves T4)."""
+        """Cumulative charges. Monotonically non-decreasing (T4)."""
         return self._spent_gross_i / self._SCALE
 
     @property
     def spent_refunded(self) -> float:
-        """Cumulative refunds (never decreases)."""
+        """Cumulative refunds. Monotonically non-decreasing."""
         return self._refunded_i / self._SCALE
 
     @property
     def spent_net(self) -> float:
-        """Net spend after refunds (used for budget enforcement — T1)."""
+        """Net spend after refunds. Used for budget enforcement (T1)."""
         return (self._spent_gross_i - self._refunded_i) / self._SCALE
 
     @property
     def spent(self) -> float:
-        """Alias for spent_net for backward compatibility."""
+        """Alias for spent_net (backward compatibility)."""
         return self.spent_net
 
     @property
     def remaining(self) -> float:
-        """Remaining budget (based on net spend)."""
+        """Remaining budget = total - net spend."""
         return (self._budget_i - (self._spent_gross_i - self._refunded_i)) / self._SCALE
 
     def can_afford(self, cost: float) -> Tuple[bool, str]:
-        """Check if net spend + cost would exceed budget."""
+        """Thread-safe check: would charging 'cost' exceed the budget?"""
         if cost < 0:
             raise ValueError(f"Cost must be ≥ 0, got {cost}")
         cost_i = round(cost * self._SCALE)
@@ -482,50 +501,52 @@ class BudgetController:
                        f"spent_net=${self.spent_net:.2f}, remaining=${self.remaining:.2f}")
 
     def charge(self, action_id: str, cost: float) -> None:
-        """Charge budget (increases spent_gross). Precondition: can_afford(cost) was (True, _)."""
+        """
+        Commit a charge. Caller must have called can_afford(cost) first.
+        Increments gross spend (T4). Asserts T1 post-charge.
+        """
         if cost < 0:
-            raise ValueError(f"Cost must be ≥ 0")
+            raise ValueError("Cost must be ≥ 0")
         cost_i = round(cost * self._SCALE)
         with self._lock:
             old_gross = self._spent_gross_i
             net_i = self._spent_gross_i - self._refunded_i
             if net_i + cost_i > self._budget_i:
-                raise RuntimeError("BUDGET SAFETY VIOLATION — charge without can_afford")
+                raise RuntimeError("BUDGET SAFETY VIOLATION — charge() called without can_afford()")
             self._spent_gross_i += cost_i
-            # Verify T4: gross spent is monotone
             assert self._spent_gross_i >= old_gross, "T4 VIOLATED: spent_gross decreased"
-            # Verify T1: net spent respects budget
             assert self.spent_net <= self.budget, "T1 VIOLATED: spent_net exceeded budget"
         self._ledger.append((action_id, cost, _time.time()))
 
     def refund(self, action_id: str, cost: float) -> None:
-        """Record refund for rollback (increases spent_refunded). Supports T7."""
+        """
+        Record a refund for rollback. Increments spent_refunded, reducing net spend.
+        Cannot refund more than total gross spend (floor at zero net).
+        """
         if cost < 0:
-            raise ValueError(f"Cost must be ≥ 0")
+            raise ValueError("Cost must be ≥ 0")
         cost_i = round(cost * self._SCALE)
         with self._lock:
             old_refunded = self._refunded_i
-            # Cannot refund more than was ever spent
             if self._refunded_i + cost_i <= self._spent_gross_i:
                 self._refunded_i += cost_i
                 assert self._refunded_i >= old_refunded, "Refund tracking failed"
         self._ledger.append((f"REFUND:{action_id}", -cost, _time.time()))
 
     def utilization(self) -> float:
-        """Utilization as fraction of budget (based on net spend)."""
+        """Net spend as a fraction of total budget."""
         return (self._spent_gross_i - self._refunded_i) / self._budget_i if self._budget_i > 0 else 0.0
 
     @property
     def ledger(self) -> List[Tuple[str, float, float]]:
-        """Append-only transaction log."""
+        """Append-only transaction log: (action_id, amount, timestamp)."""
         return list(self._ledger)
 
     def summary(self) -> str:
-        """Human-readable budget summary."""
         return (f"Budget: ${self.budget:.2f} | "
-                f"Spent (gross): ${self.spent_gross:.2f} | "
+                f"Gross: ${self.spent_gross:.2f} | "
                 f"Refunded: ${self.spent_refunded:.2f} | "
-                f"Spent (net): ${self.spent_net:.2f} | "
+                f"Net: ${self.spent_net:.2f} | "
                 f"Remaining: ${self.remaining:.2f} | "
                 f"Utilization: {self.utilization():.1%}")
 
@@ -537,25 +558,28 @@ class BudgetController:
 @dataclass(frozen=True)
 class TraceEntry:
     """
-    Single entry in the execution trace. Immutable and hash-linked.
+    Single immutable entry in the execution trace, linked by SHA-256 hash.
 
     Theorem T6 (Trace Integrity):
-      The trace is append-only. Each entry's hash depends on the
-      previous entry's hash, forming a hash chain.
-      Tampering with entry i invalidates all entries j > i.
-    Proof: By construction — prev_hash field creates a linked chain,
-      and TraceEntry is frozen (immutable). ∎
+      The trace is append-only. Each entry's hash commits to the previous
+      entry's hash, forming a tamper-evident chain.
+      Modifying entry i invalidates all entries j > i (detectable by
+      verify_integrity()).
+    Proof:
+      TraceEntry is frozen (immutable by construction).
+      prev_hash creates a linked chain.
+      compute_hash() covers all fields including prev_hash.  ∎
     """
     step: int
     action_id: str
     action_name: str
-    state_before_fp: str      # fingerprint of state before
-    state_after_fp: str       # fingerprint of state after
+    state_before_fp: str       # fingerprint of state before action
+    state_after_fp: str        # fingerprint of state after action
     cost: float
     timestamp: float
     approved: bool
     rejection_reasons: Tuple[str, ...] = ()
-    reasoning_summary: str = ""   # LLM's reasoning (for audit)
+    reasoning_summary: str = ""   # LLM reasoning, stored for audit
     prev_hash: str = ""
 
     def compute_hash(self) -> str:
@@ -569,15 +593,14 @@ class TraceEntry:
 
 
 class ExecutionTrace:
-    """Append-only, hash-chained execution log."""
+    """Append-only, SHA-256 hash-chained execution log (T6)."""
 
     def __init__(self):
         self._entries: List[TraceEntry] = []
         self._head_hash = "0" * 32  # Genesis hash
 
     def append(self, entry: TraceEntry) -> str:
-        """Append entry and return its hash."""
-        # Link to previous
+        """Append entry (linking to current head) and return its hash."""
         linked = TraceEntry(
             step=entry.step, action_id=entry.action_id,
             action_name=entry.action_name,
@@ -595,7 +618,7 @@ class ExecutionTrace:
         return h
 
     def verify_integrity(self) -> Tuple[bool, str]:
-        """Verify the entire hash chain."""
+        """Walk the entire hash chain. O(n). Returns (ok, message)."""
         prev = "0" * 32
         for i, entry in enumerate(self._entries):
             if entry.prev_hash != prev:
@@ -639,9 +662,9 @@ class CheckResult(Enum):
 
 @dataclass
 class SafetyVerdict:
-    """Complete result of safety evaluation."""
+    """Complete result of a safety evaluation for one proposed action."""
     approved: bool
-    checks: List[Tuple[str, CheckResult, str]]  # (name, result, detail)
+    checks: List[Tuple[str, CheckResult, str]]  # (check_name, result, detail)
     simulated_next_state: Optional[State] = None
     cost: float = 0.0
 
@@ -661,34 +684,41 @@ class SafetyVerdict:
 
 class SafetyKernel:
     """
-    The formal safety gate. Every action passes through here.
+    The formal safety gate. Every proposed action passes through here.
 
-    This kernel enforces T1 (budget), T2 (termination), T3 (invariants),
-    T5 (atomicity). It knows NOTHING about LLMs or heuristics.
-    It is the innermost, non-negotiable layer.
+    Enforces T1 (budget), T2 (termination), T3 (invariants), T5 (atomicity).
+    Has zero knowledge of LLMs or heuristics. This is the innermost,
+    non-bypassable layer.
 
     Theorem T2 (Termination):
       Given discrete actions with min_cost ε > 0 and budget B:
         System halts in ≤ ⌊B/ε⌋ steps.
     Proof:
-      After n steps: spent ≥ n·ε (each step costs ≥ ε).
+      After n steps: spent ≥ n·ε (each step costs ≥ ε, enforced at Check 0).
       When n > ⌊B/ε⌋: spent > B - ε.
-      Next action needs cost ≥ ε but remaining < ε → rejected.
+      Next action needs cost ≥ ε but remaining < ε → budget check rejects it.
       System halts. ∎
 
     Theorem T5 (Atomicity):
-      Either ALL of {budget charge, state transition, trace append}
-      happen, or NONE do.
-    Proof: By construction — evaluate() simulates but does NOT commit.
+      Either ALL of {budget charge, state transition, trace append} happen,
+      or NONE do.
+    Proof:
+      evaluate() simulates but does NOT commit.
       execute() commits only if evaluate() returned approved=True.
-      If any step in execute() fails (assertion), exception prevents
-      partial commit. ∎
+      State is immutable: simulate() creates a new State object, never
+      touching the original.  ∎
+
+    Emergency actions (T8):
+      Actions registered in emergency_actions bypass cost and step-limit checks.
+      They must have cost=0.0 and effects=() (enforced by caller convention).
+      This guarantees a graceful exit route is always available.
     """
     def __init__(self, budget: float, invariants: List[Invariant],
                  min_action_cost: float = 0.001,
                  emergency_actions: Optional[Set[str]] = None):
         if min_action_cost <= 0:
-            raise ValueError(f"min_action_cost must be > 0 for T2 (termination), got {min_action_cost}")
+            raise ValueError(
+                f"min_action_cost must be > 0 for T2 (termination), got {min_action_cost}")
         self.budget = BudgetController(budget)
         self.invariants = list(invariants)
         self.min_action_cost = min_action_cost
@@ -697,40 +727,40 @@ class SafetyKernel:
         self.max_steps = int(budget / min_action_cost)
         self._lock = _threading.Lock()
 
-        # Emergency actions: can bypass cost and step limit checks
-        # Must have empty effects and zero cost
-        # Designed for graceful degradation (e.g., SAFE_HOVER)
+        # Emergency actions bypass cost/step checks (T8).
+        # Must have empty effects and zero cost by convention.
         self.emergency_actions: Set[str] = emergency_actions or set()
 
-        # Precondition checkers (pluggable)
+        # Pluggable precondition checkers (called before invariant checks).
         self._precondition_fns: List[Callable[[State, ActionSpec], Tuple[bool, str]]] = []
 
     def add_precondition(self, fn: Callable[[State, ActionSpec], Tuple[bool, str]]):
-        """Register an additional precondition checker."""
+        """Register an additional precondition function (checked in evaluate())."""
         self._precondition_fns.append(fn)
+
+    def register_emergency_action(self, action_id: str) -> None:
+        """Register an action as an emergency action (bypasses cost/step limits, T8)."""
+        self.emergency_actions.add(action_id)
 
     def evaluate(self, state: State, action: ActionSpec) -> SafetyVerdict:
         """
-        Evaluate action safety WITHOUT executing. Pure function.
+        Evaluate action safety WITHOUT committing. Pure function (no side effects).
 
-        Returns SafetyVerdict with:
+        Runs all checks on a simulated copy of state. Returns SafetyVerdict with:
           - approved: True iff ALL checks pass
-          - simulated_next_state: the state after action (if approved)
-          - All check details for audit/reasoning
+          - simulated_next_state: state after action (if budget/termination pass)
+          - checks: full audit trail of each check result
 
-        Note on T3 (Invariant Preservation):
-          T3 is scoped to invariants with enforcement="blocking".
-          Invariants with enforcement="monitoring" are checked and logged
-          for diagnostic purposes, but their violations do not block actions.
-          Only blocking-mode invariants provide formal safety guarantees.
+        T3 scope: only invariants with enforcement="blocking" block approval.
+        Invariants with enforcement="monitoring" are checked and logged but
+        do not prevent action execution.
         """
         checks: List[Tuple[str, CheckResult, str]] = []
         approved = True
 
-        # ── Check 0: Minimum cost (T2 prerequisite) ──
+        # Check 0: Minimum cost (prerequisite for T2 termination bound).
         if action.cost < self.min_action_cost:
             if action.id in self.emergency_actions:
-                # Emergency action bypass: allowed to have zero cost
                 checks.append(("MinCost", CheckResult.PASS,
                               f"Emergency action '{action.id}' bypasses cost minimum"))
             else:
@@ -738,7 +768,7 @@ class SafetyKernel:
                               f"Action cost ${action.cost:.4f} < min ${self.min_action_cost:.4f}"))
                 approved = False
 
-        # ── Check 1: Budget (T1) ──
+        # Check 1: Budget (T1).
         can_afford, reason = self.budget.can_afford(action.cost)
         if can_afford:
             checks.append(("Budget", CheckResult.PASS,
@@ -747,10 +777,9 @@ class SafetyKernel:
             checks.append(("Budget", CheckResult.FAIL_BUDGET, reason))
             approved = False
 
-        # ── Check 2: Termination (T2) ──
+        # Check 2: Step limit (T2).
         if self.step_count >= self.max_steps:
             if action.id in self.emergency_actions:
-                # Emergency action bypass: allowed even at step limit
                 checks.append(("Termination", CheckResult.PASS,
                               f"Emergency action '{action.id}' bypasses step limit"))
             else:
@@ -761,26 +790,25 @@ class SafetyKernel:
             checks.append(("Termination", CheckResult.PASS,
                           f"Step {self.step_count + 1}/{self.max_steps}"))
 
-        # ── Check 3: Invariants (T3 for blocking-mode only) ──
+        # Check 3: Invariants (T3 for blocking-mode, logging for monitoring-mode).
+        # Only simulate if budget/termination passed (avoid wasted simulation work).
         sim_state = None
-        if approved:  # Only simulate if budget/termination passed
+        if approved:
             sim_state = action.simulate(state)
             for inv in self.invariants:
                 holds, msg = inv.check(sim_state)
                 if holds:
                     checks.append((f"Invariant:{inv.name}", CheckResult.PASS, "holds"))
                 else:
-                    # Invariant violated: check enforcement mode
                     enforcement = getattr(inv, "enforcement", "blocking")
                     checks.append((f"Invariant:{inv.name}",
-                                  CheckResult.FAIL_INVARIANT, 
+                                  CheckResult.FAIL_INVARIANT,
                                   f"[{enforcement}] {msg}"))
-                    # Only blocking-mode violations prevent approval (T3 scope)
                     if enforcement == "blocking":
                         approved = False
-                    # Monitoring-mode violations are logged but do not block
+                    # monitoring-mode violations are recorded but do not block
 
-        # ── Check 4: Pluggable preconditions ──
+        # Check 4: Pluggable preconditions (user-supplied additional gates).
         for fn in self._precondition_fns:
             try:
                 ok, msg = fn(state, action)
@@ -801,24 +829,22 @@ class SafetyKernel:
     def execute(self, state: State, action: ActionSpec,
                 reasoning_summary: str = "") -> Tuple[State, TraceEntry]:
         """
-        Execute action with full safety guarantees.
+        Execute action with full safety guarantees (defense-in-depth re-evaluation).
 
-        This method calls evaluate() for defense-in-depth verification,
-        then commits the state change, budget charge, and trace entry.
+        Calls evaluate() again as a safety net, then commits atomically:
+          budget charge → step increment → trace append.
 
-        Precondition:  evaluate(state, action).approved == True
+        Note on TOCTOU: In multi-threaded scenarios, use evaluate_and_execute_atomic()
+        instead to eliminate the time-of-check-to-time-of-use race. This method
+        is safe for single-threaded use.
+
         Postconditions:
           - Budget charged (T1: spent_net + cost ≤ budget)
           - Step count incremented (T2)
           - New state satisfies all blocking-mode invariants (T3)
-          - All-or-nothing atomicity (T5)
-          - Trace updated with entry (T6)
-
-        Note: Re-evaluation provides defense-in-depth but creates a TOCTOU gap
-        in concurrent scenarios. Use evaluate_and_execute_atomic() for true
-        atomicity across threads.
+          - Atomicity: all-or-nothing (T5)
+          - Trace updated (T6)
         """
-        # Verify safety (defense in depth — even if caller checked)
         verdict = self.evaluate(state, action)
         if not verdict.approved:
             raise RuntimeError(
@@ -828,7 +854,6 @@ class SafetyKernel:
         new_state = verdict.simulated_next_state
         assert new_state is not None
 
-        # ── Commit: budget + state + trace ──
         self.budget.charge(action.id, action.cost)
         self.step_count += 1
 
@@ -842,38 +867,30 @@ class SafetyKernel:
         )
         self.trace.append(entry)
 
-        # Runtime verification (belt AND suspenders)
-        assert self.budget.spent_net <= self.budget.budget, "T1 VIOLATED: spent_net > budget"
-        assert self.step_count <= self.max_steps, "T2 VIOLATED: step_count exceeded max_steps"
-        # Only check blocking-mode invariants per T3 scope
+        # Post-commit belt-and-suspenders assertions.
+        assert self.budget.spent_net <= self.budget.budget, "T1 VIOLATED post-commit"
+        assert self.step_count <= self.max_steps, "T2 VIOLATED post-commit"
         for inv in self.invariants:
             if getattr(inv, "enforcement", "blocking") == "blocking":
                 ok, msg = inv.check(new_state)
-                assert ok, f"T3 VIOLATED (blocking invariant): {msg}"
+                assert ok, f"T3 VIOLATED (blocking invariant post-commit): {msg}"
 
         return new_state, entry
 
     def evaluate_and_execute_atomic(self, state: State, action: ActionSpec,
                                      reasoning_summary: str = "") -> Tuple[State, TraceEntry]:
         """
-        Evaluate and execute as a single atomic transaction (thread-safe).
+        Evaluate and execute as a single atomic transaction.
 
-        This method combines evaluate() and execute() under a single lock,
-        eliminating the TOCTOU (time-of-check-to-time-of-use) gap that exists
-        in concurrent scenarios when evaluate() and execute() are called separately.
+        Holds the kernel lock across both the check and the commit, eliminating
+        the TOCTOU race that exists between separate evaluate() + execute() calls
+        in concurrent settings. This is the preferred method for any multi-threaded
+        orchestration.
 
-        Guarantees (concurrent-safe):
-          - Budget check and charge are atomic
-          - Step check and increment are atomic
-          - No interleaving with other threads' charges or steps
-
-        Returns: (new_state, trace_entry) on success
-        Raises: RuntimeError if safety check fails
-
-        This is the preferred method for concurrent execution.
+        Returns: (new_state, trace_entry) on success.
+        Raises: RuntimeError if any safety check fails.
         """
         with self._lock:
-            # Evaluate (within lock)
             verdict = self.evaluate(state, action)
             if not verdict.approved:
                 raise RuntimeError(
@@ -883,7 +900,6 @@ class SafetyKernel:
             new_state = verdict.simulated_next_state
             assert new_state is not None
 
-            # Execute (within lock — no race possible)
             self.budget.charge(action.id, action.cost)
             self.step_count += 1
 
@@ -897,25 +913,24 @@ class SafetyKernel:
             )
             self.trace.append(entry)
 
-            # Assertions (post-commit verification)
-            assert self.budget.spent_net <= self.budget.budget, "T1 VIOLATED: spent_net > budget"
-            assert self.step_count <= self.max_steps, "T2 VIOLATED: step_count exceeded max_steps"
+            assert self.budget.spent_net <= self.budget.budget, "T1 VIOLATED (atomic)"
+            assert self.step_count <= self.max_steps, "T2 VIOLATED (atomic)"
             for inv in self.invariants:
                 if getattr(inv, "enforcement", "blocking") == "blocking":
                     ok, msg = inv.check(new_state)
-                    assert ok, f"T3 VIOLATED (blocking invariant): {msg}"
+                    assert ok, f"T3 VIOLATED (atomic, blocking invariant): {msg}"
 
             return new_state, entry
 
     def record_rejection(self, state: State, action: ActionSpec,
                          reasons: Tuple[str, ...],
                          reasoning_summary: str = "") -> TraceEntry:
-        """Record a rejected action in the trace (for audit)."""
+        """Append a rejected-action entry to the trace for audit completeness."""
         entry = TraceEntry(
             step=self.step_count,
             action_id=action.id, action_name=action.name,
             state_before_fp=state.fingerprint,
-            state_after_fp=state.fingerprint,  # state unchanged
+            state_after_fp=state.fingerprint,  # state unchanged on rejection
             cost=0.0, timestamp=_time.time(),
             approved=False, rejection_reasons=reasons,
             reasoning_summary=reasoning_summary,
@@ -926,12 +941,14 @@ class SafetyKernel:
     def rollback(self, state_before: State, state_after: State,
                  action: ActionSpec) -> State:
         """
-        Rollback an executed action. Returns state_before (exact).
-        Theorem T7: guaranteed by compute_inverse_effects.
+        Rollback an executed action. Returns state_before exactly.
+
+        T7 guarantee: State is immutable, so state_before still exists unchanged.
+        Budget is refunded via separate accounting (T4 monotonicity preserved).
         """
         self.budget.refund(action.id, action.cost)
         self.step_count = max(0, self.step_count - 1)
-        return state_before  # Exact, because State is immutable (P1)
+        return state_before  # Exact, because State immutability (P1) guarantees no mutation.
 
     def status(self) -> str:
         return (f"SafetyKernel: step={self.step_count}/{self.max_steps} | "
@@ -944,26 +961,30 @@ class SafetyKernel:
 # ═══════════════════════════════════════════════════════════════════════════
 
 FORMAL_CLAIMS = [
-    Claim("T1", "spent(t) ≤ B₀ for all t",
+    Claim("T1", "spent_net(t) ≤ B₀ for all t",
           GuaranteeLevel.PROVEN,
-          "Induction on t. Guard: cost ≤ remaining. See §4."),
+          "Induction on t. Guard check-before-charge. See BudgetController.charge()."),
     Claim("T2", "System halts in ≤ ⌊B₀/ε⌋ steps",
           GuaranteeLevel.CONDITIONAL,
-          "Induction + pigeonhole. See §6.",
+          "Induction + pigeonhole. See SafetyKernel.evaluate() Check 0.",
           assumptions=("Discrete actions", "min_cost ε > 0")),
-    Claim("T3", "I(s₀)=True ⟹ I(sₜ)=True for all t",
+    Claim("T3", "I(s₀)=True ⟹ I(sₜ)=True for all t (blocking-mode invariants)",
           GuaranteeLevel.PROVEN,
-          "Induction. Check-before-commit. See §3."),
-    Claim("T4", "spent(t) ≤ spent(t+1)",
+          "Induction. Check-before-commit. See SafetyKernel.evaluate() Check 3."),
+    Claim("T4", "spent_gross(t) ≤ spent_gross(t+1)",
           GuaranteeLevel.PROVEN,
-          "cost ≥ 0 asserted. See §4."),
+          "cost ≥ 0 asserted. See BudgetController.charge()."),
     Claim("T5", "State transitions are all-or-nothing",
           GuaranteeLevel.PROVEN,
-          "Evaluate simulates, execute commits atomically. See §6."),
-    Claim("T6", "Trace is append-only, hash-chained",
+          "evaluate() simulates on copy; execute() commits only on approval. See §6."),
+    Claim("T6", "Trace is append-only and tamper-evident",
           GuaranteeLevel.PROVEN,
-          "TraceEntry is frozen, hash includes prev_hash. See §5."),
+          "TraceEntry is frozen; hash chain covers all fields. See ExecutionTrace."),
     Claim("T7", "undo(execute(s,a)) == s",
           GuaranteeLevel.PROVEN,
-          "State immutability + stored inverse effects. See §2, §6."),
+          "State immutability + algebraic inverse effects. See ActionSpec.compute_inverse_effects()."),
+    Claim("T8", "SAFE_HOVER is always executable",
+          GuaranteeLevel.CONDITIONAL,
+          "Emergency action bypasses cost/step checks. See SafetyKernel.evaluate() Checks 0,2.",
+          assumptions=("Action registered in emergency_actions", "cost=0.0, effects=()")),
 ]

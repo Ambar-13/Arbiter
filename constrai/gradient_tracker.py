@@ -1,29 +1,26 @@
 """
-Gradient Tracker for Formal Safety Margins (Heuristic)
-=======================================================
+Gradient Tracker for Safety Margins (Heuristic)
+================================================
 
-This module implements HEURISTIC "Jacobian of Safety" — estimation of
-how close each state variable is to violating an invariant.
+Estimates how close each state variable is to violating each invariant,
+using finite-difference perturbation (a "Jacobian of Safety" approximation).
 
-IMPORTANT: This analysis is NOT formally proven. It provides pragmatic
-heuristic guidance for LLM prompting and early warnings, but should NOT
-be used for safety-critical decisions.
+GUARANTEE LEVEL: HEURISTIC
+  Results are NOT formally proven. Use this for:
+    - Informing LLM prompts (highlight near-boundary variables)
+    - Early warnings before invariant violations occur
+    - Prompt saliency pruning (drop irrelevant variables from context)
 
-Key idea: For each state variable k and each invariant I, estimate:
-    ∇ₖ I(s) := heuristic sensitivity score indicating variable criticality
+  For formally-proven invariant enforcement, use the kernel's T3 (formal.py).
 
-This enables:
-  1. **Prioritization**: which variables matter most? (heuristic)
-  2. **Warning signals**: how close are we to invariant boundary? (heuristic)
-  3. **State pruning**: drop irrelevant variables from prompts (heuristic)
-  4. **Adaptive constraints**: tighten limits when approaching boundary (heuristic)
+Core idea: for each (variable, invariant) pair, perturb the variable by a
+small ε and check whether the invariant still holds. A small perturbation
+that breaks the invariant means the variable is near its safety boundary.
 
-Assumptions (required for reliability):
-  - Invariant predicates are pure functions (no side effects, non-deterministic)
+Reliability assumptions:
+  - Invariant predicates are pure (no side effects, no randomness)
   - Invariants are approximately continuous near current state
-  - Perturbation magnitude is relevant to actual dynamics
-
-For formal invariant guarantees, use kernel's T3 (formal.py), NOT these heuristics.
+  - The chosen ε is proportional to real dynamics
 """
 
 from __future__ import annotations
@@ -84,28 +81,26 @@ class GradientReport:
 
 class GradientTracker:
     """
-    Compute formal safety margins (gradients) for each state variable
-    with respect to each invariant.
+    Heuristic safety margin estimator. Reports how close each state variable
+    is to breaking each invariant, using finite-difference perturbation.
     """
-    
+
     def __init__(self, invariants: List[Invariant]):
         self.invariants = invariants
-    
+
     def compute_gradients(self, state: State) -> GradientReport:
         """
-        Analyze how close state variables are to violating invariants.
-        
+        Estimate boundary proximity for all (variable, invariant) pairs.
+
         Algorithm:
           For each variable k in state:
             For each invariant I:
-              1. Check if I holds on state → baseline
-              2. Perturb k (increment/decrement by small ε)
-              3. Check if I still holds on perturbed state
-              4. Assign sensitivity score
-        
-        Theorem: This is a LOCAL linear approximation of the constraint
-        boundary. It's exact only for linear constraints, but works as a
-        heuristic for nonlinear ones.
+              1. Verify I holds on current state (baseline).
+              2. If k is numeric, perturb by ε and 10ε in both directions.
+              3. If a small perturbation breaks I, score the variable high-risk.
+
+        This is a LOCAL finite-difference approximation. Exact only for linear
+        constraints; used as a diagnostic heuristic for nonlinear ones.
         """
         report = GradientReport(state_fingerprint=state.fingerprint)
         epsilon = 0.01  # Small perturbation for finite difference
@@ -195,10 +190,8 @@ class GradientTracker:
     
     def should_trigger_safe_hover(self, report: GradientReport) -> Tuple[bool, str]:
         """
-        Decide if we should enter Safe Hover mode based on gradient report.
-        
-        Heuristic: If ANY critical variable is detected, or overall margin < 10%,
-        enter safe hover.
+        Heuristic: recommend Safe Hover if any variable is CRITICAL/SEVERE,
+        or if the overall minimum safety margin drops below 10%.
         """
         if report.critical_variables:
             return True, f"Critical variables: {report.critical_variables}"
