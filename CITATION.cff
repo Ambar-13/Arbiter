@@ -6,7 +6,7 @@ authors:
   - given-names: Ambar
     affiliation: "National University of Singapore"
     orcid: ""
-version: "0.4.0"
+version: "0.4.1"
 date-released: "2026-02-27"
 license: MIT
 url: "https://github.com/Ambar-13/ConstrAI"
