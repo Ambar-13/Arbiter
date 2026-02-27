@@ -703,7 +703,7 @@ Every claim in ConstrAI carries one of four epistemic labels:
 | `EMPIRICAL` | Measured on test suites; confidence intervals available |
 | `HEURISTIC` | Best-effort; no formal guarantee (gradient tracker, HJB barrier) |
 
-T1, T3, T4, T5, T6, T7 are `PROVEN`. T2 and T8 are `CONDITIONAL`. See [MATHEMATICAL_COMPLIANCE.md](MATHEMATICAL_COMPLIANCE.md) for the full proofs.
+T1, T3, T4, T5, T6, T7 are `PROVEN`. T2 and T8 are `CONDITIONAL`. See [MATHEMATICAL_COMPLIANCE.md](https://github.com/Ambar-13/ConstrAI/blob/main/MATHEMATICAL_COMPLIANCE.md) for the full proofs.
 
 ### What is and is not guaranteed for real-world actions
 
@@ -824,13 +824,13 @@ restored = kernel.rollback(state, new_state, reversible_action)
 | Deep Python memory manipulation (`ctypes`, `gc`, `sys`) | Partially mitigated. Not memory-safe against intentional bypasses. |
 | 4 adversarial evasion vectors (base64 payloads, `getattr` dynamic dispatch) | These bypass the classification layer before an `ActionSpec` is constructed. The kernel itself has no known bypass. |
 
-See [docs/VULNERABILITIES.md](docs/VULNERABILITIES.md) for the full breakdown.
+See [docs/VULNERABILITIES.md](https://github.com/Ambar-13/ConstrAI/blob/main/docs/VULNERABILITIES.md) for the full breakdown.
 
 ---
 
 ## Performance
 
-Measured on 10,000 sequential safety checks in a single process (see [BENCHMARKS.md](BENCHMARKS.md) for methodology):
+Measured on 10,000 sequential safety checks in a single process (see [BENCHMARKS.md](https://github.com/Ambar-13/ConstrAI/blob/main/BENCHMARKS.md) for methodology):
 
 | Metric | Value |
 |--------|-------|

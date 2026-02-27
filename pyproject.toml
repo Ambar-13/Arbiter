@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "constrai"
-version = "0.4.0"
+version = "0.4.1"
 description = "Formal safety framework for AI agents with provable guarantees"
 readme = "README.md"
 license = "MIT"
