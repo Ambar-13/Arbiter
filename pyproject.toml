@@ -5,26 +5,44 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clampai"
 version = "1.0.0"
-description = "Formal safety framework for AI agents with provable guarantees"
+description = "Safety guardrails for LLM agents — budget enforcement, invariants, and provable guarantees. Zero dependencies."
 readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Ambar", email = "ambar13@u.nus.edu" },
 ]
 keywords = [
-    "formal-methods",
+    "clampai",
+    "llm",
+    "llm-safety",
     "ai-safety",
-    "autonomous-agents",
-    "execution-semantics",
-    "invariants",
-    "verification",
+    "guardrails",
+    "budget-enforcement",
+    "agent",
     "agent-framework",
-    "state-machines",
+    "agent-safety-frameworks",
+    "autonomous-agents",
+    "agentic-ai",
+    "agentic-ai-security",
+    "langchain",
+    "langgraph",
+    "openai",
+    "anthropic",
+    "openclaw",
+    "fastapi",
+    "rate-limiting",
+    "invariants",
+    "middleware",
+    "autogen",
+    "crewai",
+    "formal-methods",
+    "verification",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -32,7 +50,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 requires-python = ">=3.9"
